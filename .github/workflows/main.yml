@@ -1,4 +1,4 @@
-name: sanui
+name: senuimi
 
 on:
   workflow_dispatch:
@@ -7,113 +7,48 @@ permissions:
   contents: read
 
 jobs:
-  setup-gui-runner:
+  setup-ssh-runner:
     runs-on: ubuntu-latest
-    timeout-minutes: 350   # أقل من 6 ساعات لتجنب الإنهاء المفاجئ
     env:
       TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
       USERNAME: runner
       PASSWORD: runner
-      TAILSCALE_HOSTNAME: gh-gnome-vnc-${{ github.run_id }}
+      TAILSCALE_HOSTNAME: gh-ssh-${{ github.run_id }}
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Ensure runner user has sudo
+      - name: Ensure runner user has sudo + password
         run: |
           echo "${USERNAME}:${PASSWORD}" | sudo chpasswd
           echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/${USERNAME}
-          sudo chmod 0440 /etc/sudoers.d/${USERNAME}
 
-      - name: Install GNOME + VNC server
+      - name: Install OpenSSH server
         run: |
-          echo ">>> Installing GNOME Desktop + VNC..."
+          echo ">>> Installing OpenSSH..."
           sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            ubuntu-desktop-minimal \
-            gnome-session gnome-shell gnome-terminal nautilus \
-            gnome-session-bin dbus-x11 dbus-user-session \
-            xorg xserver-xorg-video-dummy xauth \
-            tigervnc-standalone-server tigervnc-common tigervnc-tools
-
-      - name: Configure VNC + GNOME session
-        run: |
-          echo ">>> Configuring VNC and GNOME session files..."
-          HOME_DIR="/home/${USERNAME}"
-
-          # 1) كلمة مرور VNC في المسار الذي يقرأه TigerVNC الحديث
-          mkdir -p "${HOME_DIR}/.config/tigervnc"
-          echo "${PASSWORD}" | vncpasswd -f > "${HOME_DIR}/.config/tigervnc/passwd"
-          chmod 600 "${HOME_DIR}/.config/tigervnc/passwd"
-          chown -R ${USERNAME}:${USERNAME} "${HOME_DIR}/.config"
-
-          # 2) نسخة احتياطية في المسار القديم
-          mkdir -p "${HOME_DIR}/.vnc"
-          cp "${HOME_DIR}/.config/tigervnc/passwd" "${HOME_DIR}/.vnc/passwd"
-          chmod 600 "${HOME_DIR}/.vnc/passwd"
-          chown -R ${USERNAME}:${USERNAME} "${HOME_DIR}/.vnc"
-
-          # 3) سكربت بدء جلسة GNOME مع dbus و XDG_RUNTIME_DIR
-          cat > "${HOME_DIR}/.xsession" <<'EOF'
-#!/bin/bash
-export XDG_SESSION_TYPE=x11
-export XDG_CURRENT_DESKTOP=GNOME
-export XDG_SESSION_DESKTOP=gnome
-export XDG_RUNTIME_DIR=/tmp/runtime-runner
-mkdir -p "$XDG_RUNTIME_DIR"
-chmod 700 "$XDG_RUNTIME_DIR"
-export GDK_BACKEND=x11
-export CLUTTER_BACKEND=x11
-export NO_AT_BRIDGE=1
-exec dbus-launch --exit-with-session gnome-session
-EOF
-          chmod +x "${HOME_DIR}/.xsession"
-          chown ${USERNAME}:${USERNAME} "${HOME_DIR}/.xsession"
-
-          # 4) إنشاء xstartup لـ TigerVNC يشير إلى .xsession
-          cat > "${HOME_DIR}/.vnc/xstartup" <<'EOF'
-#!/bin/sh
-unset SESSION_MANAGER
-unset DBUS_SESSION_BUS_ADDRESS
-exec "$HOME/.xsession"
-EOF
-          chmod +x "${HOME_DIR}/.vnc/xstartup"
-          chown ${USERNAME}:${USERNAME} "${HOME_DIR}/.vnc/xstartup"
+          sudo apt-get install -y -qq openssh-server
+          sudo systemctl enable ssh
+          sudo systemctl restart ssh
 
       - name: Install Tailscale
         run: |
           echo ">>> Installing Tailscale..."
           curl -fsSL https://tailscale.com/install.sh | sudo sh
-          sudo tailscale up --authkey "${TAILSCALE_AUTHKEY}" --hostname "${TAILSCALE_HOSTNAME}" --accept-routes
+          sudo tailscale up --authkey "${TAILSCALE_AUTHKEY}" --hostname "${TAILSCALE_HOSTNAME}"
 
-      - name: Start VNC + Show Tailscale Info
+      - name: Show SSH Connection Info
         run: |
-          echo ">>> Starting VNC server..."
-
-          # تأكد من وجود XDG_RUNTIME_DIR قبل التشغيل
-          sudo -u ${USERNAME} mkdir -p /tmp/runtime-${USERNAME}
-          sudo -u ${USERNAME} chmod 700 /tmp/runtime-${USERNAME}
-
-          # شغّل VNC مع تمرير HOME و XDG_RUNTIME_DIR صراحةً
-          sudo -u ${USERNAME} env HOME=/home/${USERNAME} \
-            XDG_RUNTIME_DIR=/tmp/runtime-${USERNAME} \
-            /usr/bin/tigervncserver :1 -geometry 1280x800 -depth 24 -localhost no
-
-          # انتظر قليلًا للتأكد من أن الجلسة لم تنهار
-          sleep 5
-          if ! pgrep -u ${USERNAME} -f "Xtigervnc :1" >/dev/null; then
-            echo "❌ VNC session crashed. Logs:"
-            cat /home/${USERNAME}/.config/tigervnc/*:1.log || true
-            exit 1
-          fi
-
           TAILSCALE_IP=$(tailscale ip -4 | head -n1)
-
-          echo "=== CONNECTION INFO ==="
+          echo "=== SSH CONNECTION INFO ==="
+          echo "IP: ${TAILSCALE_IP}"
           echo "USERNAME: ${USERNAME}"
           echo "PASSWORD: ${PASSWORD}"
-          echo "Connect with any VNC client to:"
-          echo "    ${TAILSCALE_IP}:5901"
           echo
+          echo ">>> Connect with:"
+          echo "    ssh -o StrictHostKeyChecking=no ${USERNAME}@${TAILSCALE_IP}"
+          echo
+          echo "This method is provided by @MR_English2008 on Telegram."
+          echo "For more methods, join: https://t.me/ME2008_RDP"
           echo ">>> Keeping runner alive..."
           tail -f /dev/null
